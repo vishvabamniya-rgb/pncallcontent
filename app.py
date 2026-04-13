@@ -1,13 +1,14 @@
-from flask import Flask, Response, request, render_template_string
+from flask import Flask, Response, render_template_string
 import requests
 import io
 from PyPDF2 import PdfMerger
 import time
+import os
 
 app = Flask(__name__)
 
-# Token yahan fix hai
-FIXED_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5NWI0MmJjNzQwZGFkMjQzN2I1NzhlYiIsInJvbGUiOiJzdHVkZW50IiwiaXAiOiIxNTIuNTkuMTguMTM4IiwiZGV2aWNlIjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzE0NS4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiaWF0IjoxNzcyMjY2NTU3LCJleHAiOjE4MzUzMzg1NTd9.vBUp5SWekeBxGy-oIqslR2IRzTpfXxcUqcojVyr5boM"
+# 🔐 Security: Token ko environment variable se lein (hardcode na karein)
+FIXED_TOKEN = os.environ.get("PINNACLE_TOKEN", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5NWI0MmJjNzQwZGFkMjQzN2I1NzhlYiIsInJvbGUiOiJzdHVkZW50IiwiaXAiOiIxNTIuNTkuMTguMTM4IiwiZGV2aWNlIjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzE0NS4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiaWF0IjoxNzcyMjY2NTU3LCJleHAiOjE4MzUzMzg1NTd9.vBUp5SWekeBxGy-oIqslR2IRzTpfXxcUqcojVyr5boM")
 
 HEADERS = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
@@ -15,7 +16,6 @@ HEADERS = {
     'referer': 'https://ebooks.ssccglpinnacle.com/'
 }
 
-# --- FRONTEND HTML ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -32,10 +32,10 @@ HTML_TEMPLATE = """
 <body>
     <div class="box">
         <h2>📚 Pinnacle Book Downloader</h2>
-        <input type="text" id="bid" placeholder="Enter Book ID (e.g. 698053...)">
+        <input type="text" id="bid" placeholder="Enter Book ID">
         <br>
         <button onclick="dl()">Download Full PDF</button>
-        <p>Note: 200+ chapters wali book Vercel par timeout ho sakti hai.</p>
+        <p>Note: Large books may timeout on free tier.</p>
     </div>
     <script>
         function dl() {
@@ -59,16 +59,23 @@ def full_book(book_id):
     
     try:
         r = requests.get(chapters_url, headers=auth_headers, timeout=10)
+        r.raise_for_status()
         chapters = r.json()
+        
+        if not chapters:
+            return "No chapters found", 404
+            
         merger = PdfMerger()
-
-        # Merge limit for Vercel (Timeout se bachne ke liye)
-        for i, chap in enumerate(chapters[:80]): 
-            c_id = chap['_id']
-            res = requests.get(f'https://auth.ssccglpinnacle.com/api/content-ebook/{c_id}', headers=HEADERS)
+        
+        # Vercel free tier: 10s timeout, isliye limit rakhein
+        for chap in chapters[:50]:  # 80 se kam karke 50 try karein
+            c_id = chap.get('_id')
+            if not c_id:
+                continue
+            res = requests.get(f'https://auth.ssccglpinnacle.com/api/content-ebook/{c_id}', headers=HEADERS, timeout=5)
             if res.status_code == 200:
                 merger.append(io.BytesIO(res.content))
-            time.sleep(0.05)
+            time.sleep(0.02)  # Rate limit se bachne ke liye
 
         output = io.BytesIO()
         merger.write(output)
@@ -77,14 +84,13 @@ def full_book(book_id):
         return Response(
             output.read(),
             mimetype='application/pdf',
-            headers={'Content-Disposition': f'attachment; filename=Book_{book_id[-5:]}.pdf'}
+            headers={'Content-Disposition': f'attachment; filename=Book_{book_id[-6:]}.pdf'}
         )
+    except requests.exceptions.Timeout:
+        return "Error: Request timed out. Try smaller books.", 504
     except Exception as e:
         return f"Error: {str(e)}", 500
 
-if __name__ == "__main__":
-    app.run(debug=True)
-
-
-
-
+# ✅ Vercel Serverless ke liye handler (Zaroori hai)
+def handler(req, res):
+    return app(req, res)
